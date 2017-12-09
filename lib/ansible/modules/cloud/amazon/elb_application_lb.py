@@ -352,43 +352,13 @@ from ansible.module_utils.six import string_types
 from ansible.module_utils.ec2 import boto3_conn, get_aws_connection_info, camel_dict_to_snake_dict, ec2_argument_spec, get_ec2_security_group_ids_from_names, \
     ansible_dict_to_boto3_tag_list, boto3_tag_list_to_ansible_dict, compare_aws_tags, HAS_BOTO3
 
+from ansible.module_utils.aws.elbv2 import ApplicationLoadBalancer, ALBListeners
+
 try:
     import boto3
     from botocore.exceptions import ClientError, NoCredentialsError
 except ImportError:
     HAS_BOTO3 = False
-
-
-def convert_tg_name_to_arn(connection, module, tg_name):
-
-    try:
-        response = connection.describe_target_groups(Names=[tg_name])
-    except ClientError as e:
-        module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
-
-    tg_arn = response['TargetGroups'][0]['TargetGroupArn']
-
-    return tg_arn
-
-
-def wait_for_status(connection, module, elb_arn, status):
-    polling_increment_secs = 15
-    max_retries = module.params.get('wait_timeout') // polling_increment_secs
-    status_achieved = False
-
-    for x in range(0, max_retries):
-        try:
-            response = connection.describe_load_balancers(LoadBalancerArns=[elb_arn])
-            if response['LoadBalancers'][0]['State']['Code'] == status:
-                status_achieved = True
-                break
-            else:
-                time.sleep(polling_increment_secs)
-        except ClientError as e:
-            module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
-
-    result = response
-    return status_achieved, result
 
 
 def _get_subnet_ids_from_subnet_list(subnet_list):
@@ -400,24 +370,6 @@ def _get_subnet_ids_from_subnet_list(subnet_list):
     return subnet_id_list
 
 
-def get_elb_listeners(connection, module, elb_arn):
-
-    try:
-        listener_paginator = connection.get_paginator('describe_listeners')
-        return (listener_paginator.paginate(LoadBalancerArn=elb_arn).build_full_result())['Listeners']
-    except ClientError as e:
-        module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
-
-
-def get_elb_attributes(connection, module, elb_arn):
-
-    try:
-        elb_attributes = boto3_tag_list_to_ansible_dict(connection.describe_load_balancer_attributes(LoadBalancerArn=elb_arn)['Attributes'])
-    except ClientError as e:
-        module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
-
-    # Replace '.' with '_' in attribute key names to make it more Ansibley
-    return dict((k.replace('.', '_'), v) for k, v in elb_attributes.items())
 
 
 def get_listener(connection, module, elb_arn, listener_port):
@@ -473,28 +425,6 @@ def get_listener_rules(connection, module, listener_arn):
         module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
 
 
-def ensure_listeners_default_action_has_arn(connection, module, listeners):
-    """
-    If a listener DefaultAction has been passed with a Target Group Name instead of ARN, lookup the ARN and
-    replace the name.
-
-    :param connection: ELBv2 boto3 connection
-    :param module: Ansible module object
-    :param listeners: a list of listener dicts
-    :return: the same list of dicts ensuring that each listener DefaultActions dict has TargetGroupArn key. If a TargetGroupName key exists, it is removed.
-    """
-
-    if not listeners:
-        listeners = []
-
-    for listener in listeners:
-        if 'TargetGroupName' in listener['DefaultActions'][0]:
-            listener['DefaultActions'][0]['TargetGroupArn'] = convert_tg_name_to_arn(connection, module, listener['DefaultActions'][0]['TargetGroupName'])
-            del listener['DefaultActions'][0]['TargetGroupName']
-
-    return listeners
-
-
 def ensure_rules_action_has_arn(connection, module, rules):
     """
     If a rule Action has been passed with a Target Group Name instead of ARN, lookup the ARN and
@@ -514,52 +444,7 @@ def ensure_rules_action_has_arn(connection, module, rules):
     return rules
 
 
-def compare_listener(current_listener, new_listener):
-    """
-    Compare two listeners.
 
-    :param current_listener:
-    :param new_listener:
-    :return:
-    """
-
-    modified_listener = {}
-
-    # Port
-    if current_listener['Port'] != new_listener['Port']:
-        modified_listener['Port'] = new_listener['Port']
-
-    # Protocol
-    if current_listener['Protocol'] != new_listener['Protocol']:
-        modified_listener['Protocol'] = new_listener['Protocol']
-
-    # If Protocol is HTTPS, check additional attributes
-    if current_listener['Protocol'] == 'HTTPS' and new_listener['Protocol'] == 'HTTPS':
-        # Cert
-        if current_listener['SslPolicy'] != new_listener['SslPolicy']:
-            modified_listener['SslPolicy'] = new_listener['SslPolicy']
-        if current_listener['Certificates'][0]['CertificateArn'] != new_listener['Certificates'][0]['CertificateArn']:
-            modified_listener['Certificates'] = []
-            modified_listener['Certificates'].append({})
-            modified_listener['Certificates'][0]['CertificateArn'] = new_listener['Certificates'][0]['CertificateArn']
-    elif current_listener['Protocol'] != 'HTTPS' and new_listener['Protocol'] == 'HTTPS':
-        modified_listener['SslPolicy'] = new_listener['SslPolicy']
-        modified_listener['Certificates'] = []
-        modified_listener['Certificates'].append({})
-        modified_listener['Certificates'][0]['CertificateArn'] = new_listener['Certificates'][0]['CertificateArn']
-
-    # Default action
-    #   We wont worry about the Action Type because it is always 'forward'
-    if current_listener['DefaultActions'][0]['TargetGroupArn'] != new_listener['DefaultActions'][0]['TargetGroupArn']:
-        modified_listener['DefaultActions'] = []
-        modified_listener['DefaultActions'].append({})
-        modified_listener['DefaultActions'][0]['TargetGroupArn'] = new_listener['DefaultActions'][0]['TargetGroupArn']
-        modified_listener['DefaultActions'][0]['Type'] = 'forward'
-
-    if modified_listener:
-        return modified_listener
-    else:
-        return None
 
 
 def compare_condition(current_conditions, condition):
@@ -711,13 +596,6 @@ def compare_rules(connection, module, current_listeners, listener):
 def create_or_update_elb_listeners(connection, module, elb):
     """Create or update ELB listeners. Return true if changed, else false"""
 
-    listener_changed = False
-    # Ensure listeners are using Target Group ARN not name
-    listeners = ensure_listeners_default_action_has_arn(connection, module, module.params.get("listeners"))
-    purge_listeners = module.params.get("purge_listeners")
-
-    # Does the ELB have any listeners exist?
-    current_listeners = get_elb_listeners(connection, module, elb['LoadBalancerArn'])
 
     listeners_to_add, listeners_to_modify, listeners_to_delete = compare_listeners(connection, module, current_listeners, deepcopy(listeners), purge_listeners)
 
@@ -794,37 +672,10 @@ def create_or_update_elb_listeners(connection, module, elb):
     return listener_changed
 
 
-def create_or_update_elb(connection, connection_ec2, module):
+def create_or_update_elb(elb_obj):
     """Create ELB or modify main attributes. json_exit here"""
 
-    changed = False
-    new_load_balancer = False
-    params = dict()
-    params['Name'] = module.params.get("name")
-    params['Subnets'] = module.params.get("subnets")
-    try:
-        params['SecurityGroups'] = get_ec2_security_group_ids_from_names(module.params.get('security_groups'), connection_ec2, boto3=True)
-    except ValueError as e:
-        module.fail_json(msg=str(e), exception=traceback.format_exc())
-    except ClientError as e:
-        module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
-    except NoCredentialsError as e:
-        module.fail_json(msg="AWS authentication problem. " + e.message, exception=traceback.format_exc())
-
-    params['Scheme'] = module.params.get("scheme")
-    if module.params.get("tags"):
-        params['Tags'] = ansible_dict_to_boto3_tag_list(module.params.get("tags"))
-    purge_tags = module.params.get("purge_tags")
-    access_logs_enabled = module.params.get("access_logs_enabled")
-    access_logs_s3_bucket = module.params.get("access_logs_s3_bucket")
-    access_logs_s3_prefix = module.params.get("access_logs_s3_prefix")
-    deletion_protection = module.params.get("deletion_protection")
-    idle_timeout = module.params.get("idle_timeout")
-
-    # Does the ELB currently exist?
-    elb = get_elb(connection, module)
-
-    if elb:
+    if elb_obj.elb:
         # ELB exists so check subnets, security groups and tags match what has been passed
 
         # Subnets
@@ -869,46 +720,16 @@ def create_or_update_elb(connection, connection_ec2, module):
                 changed = True
 
     else:
-        try:
-            elb = connection.create_load_balancer(**params)['LoadBalancers'][0]
-            changed = True
-            new_load_balancer = True
-        except ClientError as e:
-            module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
+        # Create load balancer
+        elb_obj.create_elb()
 
-        if module.params.get("wait"):
-            status_achieved, new_elb = wait_for_status(connection, module, elb['LoadBalancerArn'], 'active')
+    # ELB attributes
+    elb_obj.update_elb_attributes()
 
-    # Now set ELB attributes. Use try statement here so we can remove the ELB if this stage fails
-    update_attributes = []
+    # Listeners
+    listeners_obj = ALBListeners(elb_obj.connection, elb_obj.module, elb_obj.elb['LoadBalancerArn'])
 
-    # Get current attributes
-    current_elb_attributes = get_elb_attributes(connection, module, elb['LoadBalancerArn'])
-
-    if access_logs_enabled and current_elb_attributes['access_logs_s3_enabled'] != "true":
-        update_attributes.append({'Key': 'access_logs.s3.enabled', 'Value': "true"})
-    if not access_logs_enabled and current_elb_attributes['access_logs_s3_enabled'] != "false":
-        update_attributes.append({'Key': 'access_logs.s3.enabled', 'Value': 'false'})
-    if access_logs_s3_bucket is not None and access_logs_s3_bucket != current_elb_attributes['access_logs_s3_bucket']:
-        update_attributes.append({'Key': 'access_logs.s3.bucket', 'Value': access_logs_s3_bucket})
-    if access_logs_s3_prefix is not None and access_logs_s3_prefix != current_elb_attributes['access_logs_s3_prefix']:
-        update_attributes.append({'Key': 'access_logs.s3.prefix', 'Value': access_logs_s3_prefix})
-    if deletion_protection and current_elb_attributes['deletion_protection_enabled'] != "true":
-        update_attributes.append({'Key': 'deletion_protection.enabled', 'Value': "true"})
-    if not deletion_protection and current_elb_attributes['deletion_protection_enabled'] != "false":
-        update_attributes.append({'Key': 'deletion_protection.enabled', 'Value': "false"})
-    if idle_timeout is not None and str(idle_timeout) != current_elb_attributes['idle_timeout_timeout_seconds']:
-        update_attributes.append({'Key': 'idle_timeout.timeout_seconds', 'Value': str(idle_timeout)})
-
-    if update_attributes:
-        try:
-            connection.modify_load_balancer_attributes(LoadBalancerArn=elb['LoadBalancerArn'], Attributes=update_attributes)
-            changed = True
-        except ClientError as e:
-            # Something went wrong setting attributes. If this ELB was created during this task, delete it to leave a consistent state
-            if new_load_balancer:
-                connection.delete_load_balancer(LoadBalancerArn=elb['LoadBalancerArn'])
-            module.fail_json(msg=e.message, exception=traceback.format_exc(), **camel_dict_to_snake_dict(e.response))
+    listeners_to_add, listeners_to_modify, listeners_to_delete = listeners_obj.compare_listeners()
 
     # Now, if required, set ELB listeners. Use try statement here so we can remove the ELB if this stage fails
     try:
@@ -1019,8 +840,10 @@ def main():
 
     state = module.params.get("state")
 
+    elb = ApplicationLoadBalancer(connection, connection_ec2, module)
+
     if state == 'present':
-        create_or_update_elb(connection, connection_ec2, module)
+        create_or_update_elb(elb)
     else:
         delete_elb(connection, module)
 
