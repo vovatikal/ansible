@@ -1,0 +1,5 @@
+---
+# defaults file for test_elb_application_lb
+tag_prefix: '{{resource_prefix}}'
+elb_name: Ansible-ALB-Tests
+resource_description: 'Created for Ansible ALB testing'
