@@ -11,16 +11,12 @@ DOCUMENTATION = '''
 module: elb_network_lb
 short_description: Manage a Network Load Balancer
 description:
-    - Manage an AWS Network Elastic Load Balancer. See U(https://aws.amazon.com/blogs/aws/new-aws-application-load-balancer/) for details.
+    - Manage an AWS Network Elastic Load Balancer. See
+      U(https://aws.amazon.com/blogs/aws/new-network-load-balancer-effortless-scaling-to-millions-of-requests-per-second/) for details.
 version_added: "2.5"
 requirements: [ boto3 ]
 author: "Rob White (@wimnat)"
 options:
-  access_logs_enabled:
-    description:
-      - "Whether or not to enable access logs. When true, I(access_logs_s3_bucket) must be set."
-    required: false
-    choices: [ 'yes', 'no' ]
   deletion_protection:
     description:
       - Indicates whether deletion protection for the ELB is enabled.
