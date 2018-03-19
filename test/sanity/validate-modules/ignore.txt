@@ -128,7 +128,6 @@ lib/ansible/modules/cloud/amazon/elasticache.py E324
 lib/ansible/modules/cloud/amazon/elasticache.py E326
 lib/ansible/modules/cloud/amazon/elasticache_parameter_group.py E324
 lib/ansible/modules/cloud/amazon/elasticache_parameter_group.py E326
-lib/ansible/modules/cloud/amazon/elb_application_lb.py E322
 lib/ansible/modules/cloud/amazon/elb_application_lb.py E324
 lib/ansible/modules/cloud/amazon/elb_application_lb.py E325
 lib/ansible/modules/cloud/amazon/elb_application_lb.py E326
